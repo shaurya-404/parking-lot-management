@@ -49,9 +49,9 @@ func entry(w http.ResponseWriter, r *http.Request) {
 		db.Exec("INSERT INTO VEHICLE VALUES (?,?,?,?)", v.TYPE, v.PLATE, v.Entry, 0)
 		db.Exec(`UPDATE PARKING SET STATE="TRUE" WHERE FLOOR = ? AND SECTION=? AND NUMBER = ?`, park.FLOOR, park.SECTION, park.NUMBER)
 		db.Exec(`UPDATE PARKING SET PLATE="?" WHERE FLOOR = ? AND SECTION=? AND NUMBER = ?`, park.FLOOR, park.SECTION, park.NUMBER)
-		fmt.Println("Parking at Floor:%s Section: %s Number: %d Plate: %s ", park.FLOOR, park.SECTION, park.NUMBER, park.PLATE)
+		fmt.Fprintf(w, "Parking at Floor:%d Section: %s Number: %d Plate: %s ", park.FLOOR, park.SECTION, park.NUMBER, park.PLATE)
 	} else {
-		fmt.Println("No parking available!")
+		fmt.Fprintf(w, "No parking available!")
 	}
 }
 
@@ -73,7 +73,7 @@ func exit(w http.ResponseWriter, r *http.Request) {
 	} else {
 		cost = 100 + 20*(h-1)
 	}
-	fmt.Println("The parking price is %d", cost)
+	fmt.Fprintf(w, "The parking price is %d", cost)
 }
 
 func delete(w http.ResponseWriter, r *http.Request) {
@@ -84,7 +84,7 @@ func delete(w http.ResponseWriter, r *http.Request) {
 	db.Exec("DELETE FROM VEHICLE WHERE PLATE = ?", v.PLATE)
 	db.Exec(`UPDATE PARKING SET STATE="FALSE" where PLATE = ?`, v.PLATE)
 	db.Exec(`UPDATE PARKING SET PLATE=NULL where PLATE = ?`, v.PLATE)
-	fmt.Println("Parking deleted!")
+	fmt.Fprintf(w, "Parking deleted!")
 }
 
 // func helloHandler(w http.ResponseWriter, r *http.Request) {
@@ -93,7 +93,7 @@ func delete(w http.ResponseWriter, r *http.Request) {
 // 		return
 // 	}
 
-// 	fmt.Fprint(w, "Hello, welcome to my Go HTTP server!")
+// 	fmt.Fprintf(w, "Hello, welcome to my Go HTTP server!")
 // }
 var db *sql.DB
 
@@ -107,6 +107,7 @@ func main() {
 
 	var err error
 	db, err = sql.Open("mysql", cfg.FormatDSN())
+	tx, err := db.Begin()
 	_ = err
 	if err != nil {
 		log.Fatal(err)
@@ -114,11 +115,13 @@ func main() {
 	db.Exec("CREATE TABLE IF NOT EXISTS VEHICLE (TYPE varchar(255),PLATE varchar(255),ENTRY TIME,EXIT TIME);")
 	db.Exec(("CREATE TABLE IF NOT EXISTS PARKING (FLOOR INT, SECTION CHAR, NUMBER INT,STATE BOOLEAN, NUMBERPLATE varchar(255));"))
 	for i := 1; i < 251; i++ {
-		db.Exec("INSERT INTO PARKING VALUES (?,?,?,?,?)", 1, "A", i, "FALSE", "NULL")
+		db.Exec("INSERT INTO PARKING VALUES (?,?,?,?,?)", 1, "A", i, 0, "NULL")
 	}
 	for i := 1; i < 251; i++ {
-		db.Exec("INSERT INTO PARKING VALUES (?,?,?,?,?)", 2, "B", i, "FALSE", "NULL")
+		db.Exec("INSERT INTO PARKING VALUES (?,?,?,?,?)", 2, "B", i, 0, "NULL")
 	}
+
+	tx.Commit()
 	pingErr := db.Ping()
 	if pingErr != nil {
 		log.Fatal(pingErr)
