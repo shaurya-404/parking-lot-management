@@ -3,10 +3,8 @@ package main
 import (
 	"database/sql"
 	"fmt"
-	_ "fmt"
 	"log"
 	"net/http"
-	"strconv"
 	"time"
 
 	"github.com/go-sql-driver/mysql"
@@ -18,6 +16,7 @@ type vehicle struct {
 	Entry string
 	Exit  string
 }
+
 type parking struct {
 	FLOOR   int
 	NUMBER  int
@@ -32,24 +31,40 @@ var maxpark = 500
 var vacantpark = 500
 var occupark = 0
 
+var db *sql.DB
+
 func entry(w http.ResponseWriter, r *http.Request) {
 	var park parking
-	row, err := db.Query(`SELECT * FROM PARKING WHERE STATE="FALSE";`)
-	_ = err
-	if occupark < 500 && row.Next() {
-		row.Scan(park.FLOOR, park.SECTION, park.NUMBER, park.state, park.PLATE)
-		occupark = occupark + 1
-		var v vehicle
+	var nullPlate sql.NullString
+
+	row := db.QueryRow(`SELECT FLOOR, SECTION, NUMBER, STATE, NUMBERPLATE FROM PARKING WHERE STATE=0 LIMIT 1;`)
+	err := row.Scan(&park.FLOOR, &park.SECTION, &park.NUMBER, &park.state, &nullPlate)
+	
+	if err == sql.ErrNoRows {
+		fmt.Fprintf(w, "No parking available!")
+		return
+	} else if err != nil {
+		fmt.Fprintf(w, "Database error")
+		return
+	}
+
+	park.PLATE = nullPlate.String
+
+	if occupark < maxpark {
 		r.ParseForm()
 		plate := r.PostFormValue("plate")
 		vehicleType := r.PostFormValue("type")
+
+		var v vehicle
 		v.PLATE = plate
-		v.Entry = time.Now().Format("15:04:05")
 		v.TYPE = vehicleType
-		db.Exec("INSERT INTO VEHICLE VALUES (?,?,?,?)", v.TYPE, v.PLATE, v.Entry, 0)
-		db.Exec(`UPDATE PARKING SET STATE="TRUE" WHERE FLOOR = ? AND SECTION=? AND NUMBER = ?`, park.FLOOR, park.SECTION, park.NUMBER)
-		db.Exec(`UPDATE PARKING SET PLATE="?" WHERE FLOOR = ? AND SECTION=? AND NUMBER = ?`, park.FLOOR, park.SECTION, park.NUMBER)
-		fmt.Fprintf(w, "Parking at Floor:%d Section: %s Number: %d Plate: %s ", park.FLOOR, park.SECTION, park.NUMBER, park.PLATE)
+		v.Entry = time.Now().Format("15:04:05")
+
+		db.Exec("INSERT INTO VEHICLE (TYPE, PLATE, ENTRY, EXIT) VALUES (?, ?, ?, ?)", v.TYPE, v.PLATE, v.Entry, nil)
+		db.Exec(`UPDATE PARKING SET STATE=1, NUMBERPLATE=? WHERE FLOOR=? AND SECTION=? AND NUMBER=?`, v.PLATE, park.FLOOR, park.SECTION, park.NUMBER)
+		
+		occupark = occupark + 1
+		fmt.Fprintf(w, "Parking at Floor:%d Section: %s Number: %d Plate: %s ", park.FLOOR, park.SECTION, park.NUMBER, v.PLATE)
 	} else {
 		fmt.Fprintf(w, "No parking available!")
 	}
@@ -58,44 +73,43 @@ func entry(w http.ResponseWriter, r *http.Request) {
 func exit(w http.ResponseWriter, r *http.Request) {
 	r.ParseForm()
 	plate := r.PostFormValue("plate")
-	row, err := db.Query(`SELECT * FROM VEHICLE WHERE PLATE="?"`, plate)
-	_ = err
-	var a, b, c, d string
-	row.Scan(&a, &b, &c, &d)
-	c = c[:2]
-	timer := time.Now().Format("15:04:05")
-	a1, err := strconv.Atoi(timer[:2])
-	a2, err := strconv.Atoi(c)
-	h := a1 - a2
+
+	var vType, vPlate, vEntry, vExit sql.NullString
+	row := db.QueryRow(`SELECT TYPE, PLATE, ENTRY, EXIT FROM VEHICLE WHERE PLATE=?`, plate)
+	err := row.Scan(&vType, &vPlate, &vEntry, &vExit)
+	
+	if err != nil {
+		fmt.Fprintf(w, "Vehicle not found!")
+		return
+	}
+
+	entryTimeStr := vEntry.String
+	currentTimeStr := time.Now().Format("15:04:05")
+
+	entryTime, _ := time.Parse("15:04:05", entryTimeStr)
+	currentTime, _ := time.Parse("15:04:05", currentTimeStr)
+
+	h := int(currentTime.Sub(entryTime).Hours())
+	if h < 1 {
+		h = 1
+	}
+
 	cost := 0
 	if h == 1 {
 		cost = 100
 	} else {
 		cost = 100 + 20*(h-1)
 	}
+
+	db.Exec("DELETE FROM VEHICLE WHERE PLATE = ?", plate)
+	db.Exec(`UPDATE PARKING SET STATE=0, NUMBERPLATE=NULL WHERE NUMBERPLATE = ?`, plate)
+	
+	if occupark > 0 {
+		occupark = occupark - 1
+	}
+
 	fmt.Fprintf(w, "The parking price is %d", cost)
 }
-
-func delete(w http.ResponseWriter, r *http.Request) {
-	var v vehicle
-	r.ParseForm()
-	plate := r.PostFormValue("plate")
-	v.PLATE = plate
-	db.Exec("DELETE FROM VEHICLE WHERE PLATE = ?", v.PLATE)
-	db.Exec(`UPDATE PARKING SET STATE="FALSE" where PLATE = ?`, v.PLATE)
-	db.Exec(`UPDATE PARKING SET PLATE=NULL where PLATE = ?`, v.PLATE)
-	fmt.Fprintf(w, "Parking deleted!")
-}
-
-// func helloHandler(w http.ResponseWriter, r *http.Request) {
-// 	if r.URL.Path != "/hello" {
-// 		http.NotFound(w, r)
-// 		return
-// 	}
-
-// 	fmt.Fprintf(w, "Hello, welcome to my Go HTTP server!")
-// }
-var db *sql.DB
 
 func main() {
 	cfg := mysql.NewConfig()
@@ -107,32 +121,37 @@ func main() {
 
 	var err error
 	db, err = sql.Open("mysql", cfg.FormatDSN())
-	tx, err := db.Begin()
-	_ = err
 	if err != nil {
 		log.Fatal(err)
 	}
+	
 	db.Exec("CREATE TABLE IF NOT EXISTS VEHICLE (TYPE varchar(255),PLATE varchar(255),ENTRY TIME,EXIT TIME);")
-	db.Exec(("CREATE TABLE IF NOT EXISTS PARKING (FLOOR INT, SECTION CHAR, NUMBER INT,STATE BOOLEAN, NUMBERPLATE varchar(255));"))
-	for i := 1; i < 251; i++ {
-		db.Exec("INSERT INTO PARKING VALUES (?,?,?,?,?)", 1, "A", i, 0, "NULL")
-	}
-	for i := 1; i < 251; i++ {
-		db.Exec("INSERT INTO PARKING VALUES (?,?,?,?,?)", 2, "B", i, 0, "NULL")
+	db.Exec("CREATE TABLE IF NOT EXISTS PARKING (FLOOR INT, SECTION CHAR, NUMBER INT,STATE BOOLEAN, NUMBERPLATE varchar(255));")
+
+	var count int
+	db.QueryRow("SELECT COUNT(*) FROM PARKING").Scan(&count)
+	if count == 0 {
+		tx, _ := db.Begin()
+		for i := 1; i < 251; i++ {
+			tx.Exec("INSERT INTO PARKING VALUES (?,?,?,?,?)", 1, "A", i, 0, nil)
+		}
+		for i := 1; i < 251; i++ {
+			tx.Exec("INSERT INTO PARKING VALUES (?,?,?,?,?)", 2, "B", i, 0, nil)
+		}
+		tx.Commit()
 	}
 
-	tx.Commit()
+	db.QueryRow("SELECT COUNT(*) FROM PARKING WHERE STATE = 1").Scan(&occupark)
+
 	pingErr := db.Ping()
 	if pingErr != nil {
 		log.Fatal(pingErr)
 	}
 	fmt.Println("Connected!")
-	mux := http.NewServeMux()
 
-	//mux.HandleFunc("/hello", helloHandler)
+	mux := http.NewServeMux()
 	mux.HandleFunc("/entry", entry)
 	mux.HandleFunc("/exit", exit)
-	mux.HandleFunc("/delete", delete)
 
 	serverAddr := ":8080"
 	fmt.Printf("Server is running on http://localhost%s/entry\n", serverAddr)
